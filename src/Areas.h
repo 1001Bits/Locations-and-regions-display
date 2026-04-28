@@ -3,6 +3,7 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <unordered_set>
 
 // Static lookup mapping each named in-game location to its wiki-style "area"
 // subtitle. Sourced verbatim from
@@ -547,6 +548,37 @@ namespace Areas
 			}();
 			return table;
 		}
+
+		// Top-level area / worldspace names that should NOT receive the
+		// "Commonwealth" fallback subtitle. These are the area headings the
+		// wiki uses, plus a couple of common worldspace title strings the
+		// engine fires when crossing between DLC worldspaces. We'd otherwise
+		// render e.g. "Far Harbor\nCommonwealth" which is wrong.
+		inline constexpr const char* kTopLevelAreas[] = {
+			"Commonwealth",
+			"Far Harbor",
+			"Nuka-World",
+			"Nuka-Town USA",
+			"The Glowing Sea",
+			"Diamond City",
+			"Goodneighbor",
+			"Bunker Hill",
+			"Sanctuary Hills",
+			"Vault 111",
+			"The Institute",
+		};
+
+		[[nodiscard]] inline const std::unordered_set<std::string>& GetTopLevelSet()
+		{
+			static const auto set = []() {
+				std::unordered_set<std::string> s;
+				for (const auto* name : kTopLevelAreas) {
+					s.emplace(ToLower(name));
+				}
+				return s;
+			}();
+			return set;
+		}
 	}
 
 	[[nodiscard]] inline const char* GetAreaForLocation(const char* a_locationName)
@@ -557,5 +589,17 @@ namespace Areas
 		const auto& table = detail::GetTable();
 		const auto  it = table.find(detail::ToLower(a_locationName));
 		return it != table.end() ? it->second : nullptr;
+	}
+
+	// True when the supplied name is itself a top-level area / worldspace
+	// title (Far Harbor, Nuka-World, Diamond City, …). Callers use this to
+	// suppress the "Commonwealth" fallback subtitle on those entries.
+	[[nodiscard]] inline bool IsTopLevelArea(const char* a_name)
+	{
+		if (!a_name || *a_name == '\0') {
+			return false;
+		}
+		const auto& set = detail::GetTopLevelSet();
+		return set.find(detail::ToLower(a_name)) != set.end();
 	}
 }
