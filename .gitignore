@@ -1,0 +1,34 @@
+# Build outputs
+build/
+out/
+*.dll
+*.exp
+*.lib
+*.pdb
+*.obj
+*.7z
+
+# IDE
+.vs/
+.vscode/
+*.user
+*.suo
+CMakeUserPresets.json
+
+# vcpkg + submodules / vendored deps (see README for setup)
+external/CommonLibF4/
+external/vcpkg/
+vcpkg_installed/
+
+# Claude Code local state
+.claude/
+
+# Misc local tooling not part of the plugin
+bridge_mcp_ghidra.py
+
+# Reference material — original Skyrim mod source we read while porting
+_source_mod/
+
+# OS / Editor noise
+.DS_Store
+Thumbs.db

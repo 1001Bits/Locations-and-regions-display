@@ -1,0 +1,11 @@
+[Settings]
+
+# Triggers a location popup when:
+#   0 - Entering any new location (different from the current one).
+#       Walking back and forth between two known locations pops every cross.
+#   1 - Entering a location different from BOTH the current and the last visited
+#       (suppresses ping-pong spam at boundary lines).
+# The very first time the player enters a location after the game launches is
+# always silent — the engine handles genuine first-discovery (chime + vignette)
+# on its own, and we don't want to pop on save-load either.
+iMode = 0

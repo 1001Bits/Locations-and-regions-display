@@ -1,0 +1,15 @@
+{
+  "name": "dynamic-location-popups-f4",
+  "version": "1.0.0",
+  "description": "F4SE plugin: pop the location title every time you re-enter a known location.",
+  "license": "MIT",
+  "builtin-baseline": "50c0cb48a0cf2f6fc5c7b2c0d2bafbe26d0a7ca2",
+  "dependencies": [
+    "fmt",
+    "rapidcsv",
+    "rsm-mmio",
+    "spdlog",
+    "tomlplusplus",
+    "xbyak"
+  ]
+}
