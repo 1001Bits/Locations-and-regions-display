@@ -9,20 +9,17 @@ using namespace REL;
 
 constexpr size_t TRAMPOLINE_SIZE = 1u << 11;
 
-// 1.11.240 isn't predefined in CommonLibF4 (RUNTIME_LATEST stops at 1.10.984)
-// so we hand-roll the constant. Anything from 1.10.984 through 1.11.240 is
-// considered an "NG" runtime by Module::IsNG().
+// CommonLibF4's runtime constants stop at 1.10.984, so the 1.11.x ones are hand-rolled.
+constexpr REL::Version RUNTIME_1_11_191{ 1, 11, 191, 0 };
+constexpr REL::Version RUNTIME_1_11_221{ 1, 11, 221, 0 };
 constexpr REL::Version RUNTIME_1_11_240{ 1, 11, 240, 0 };
 
-const auto RUNTIME_VERSION_MIN = Relocate(
-	F4SE::RUNTIME_1_10_163,
-	F4SE::RUNTIME_1_10_984,
-	F4SE::RUNTIME_VR_1_2_72);
-const auto RUNTIME_VERSION_MAX = Relocate(
-	F4SE::RUNTIME_1_10_163,
-	RUNTIME_1_11_240,
-	F4SE::RUNTIME_VR_1_2_72);
-constexpr auto RUNTIME_VERSION_NG_COMPAT = RUNTIME_1_11_240;
+// Next-gen builds whose addresses are verified (RE.h hardcodes some per build). F4SE only
+// loads a 1.11.x plugin listed here: CommonLibF4 sets the 1.10.980 address-library and
+// layout flags, not the 1.11.137 ones that would make F4SE treat it as version independent.
+constexpr std::initializer_list<REL::Version> NG_RUNTIMES{
+	F4SE::RUNTIME_1_10_984, RUNTIME_1_11_191, RUNTIME_1_11_221, RUNTIME_1_11_240
+};
 
 namespace
 {
@@ -116,7 +113,9 @@ extern "C" DLLEXPORT bool F4SEAPI F4SEPlugin_Load(const F4SE::LoadInterface* a_f
 	const auto ver = Module::get().version();
 	logger::info("Detected runtime: Fallout 4{} (v{}).", Module::IsVR() ? " VR" : "", ver.string());
 
-	if (ver < RUNTIME_VERSION_MIN || RUNTIME_VERSION_MAX < ver) {
+	const bool supported = Module::IsVR() ? ver == F4SE::RUNTIME_VR_1_2_72 :
+	                                        ver == F4SE::RUNTIME_1_10_163 || std::ranges::find(NG_RUNTIMES, ver) != NG_RUNTIMES.end();
+	if (!supported) {
 		logger::critical("Runtime version is not supported, aborting.");
 		return false;
 	}
@@ -153,6 +152,6 @@ F4SE_EXPORT auto F4SEPlugin_Version = []() noexcept {
 	data.UsesSigScanning(false);
 	data.IsLayoutDependent(true);
 	data.HasNoStructUse(false);
-	data.CompatibleVersions({ RUNTIME_VERSION_NG_COMPAT });
+	data.CompatibleVersions(NG_RUNTIMES);
 	return data;
 }();

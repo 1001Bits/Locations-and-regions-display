@@ -57,31 +57,20 @@ namespace RE::SendHUDMessage
 	inline std::atomic<int> districtLanguage{ Districts::kUnknownLanguage };
 
 	// TESForm::GetFormByNumericID(formID), which takes the form map's read lock itself.
-	// Exact builds only, verified in each executable. CommonLibF4's GetFormByID uses NG IDs
-	// 2689178/2689189, which the 1.11.x address libraries lack; the lookup then silently
-	// resolves to an unrelated entry and the game crashes.
-	[[nodiscard]] inline std::uintptr_t GetFormByNumericIDAddr()
+	// Verified in Ghidra on every supported build: OG 796114 (VR maps the same ID) and NG
+	// 2193092 in the 1.10.984, 1.11.191, 1.11.221 and 1.11.240 address libraries.
+	// CommonLibF4's GetFormByID uses NG IDs 2689178/2689189, which the 1.11.x libraries
+	// lack; that lookup silently resolves to an unrelated entry and the game crashes.
+	[[nodiscard]] inline RE::TESForm* GetFormByNumericID(std::uint32_t a_formID)
 	{
-		if (REL::Module::IsF4()) return 0x152c90;
-		if (REL::Module::IsVR()) return 0x1598c0;
-		const auto ver = REL::Module::get().version();
-		if (ver == REL::Version{ 1, 10, 984, 0 }) return 0x2bd440;
-		if (ver == REL::Version{ 1, 11, 191, 0 }) return 0x311850;
-		if (ver == REL::Version{ 1, 11, 221, 0 }) return 0x311860;
-		if (ver == REL::Version{ 1, 11, 240, 0 }) return 0x311b80;
-		return 0;
+		static const REL::Relocation<RE::TESForm*(std::uint32_t)> func{ REL::RelocationID(796114, 2193092) };
+		return func(a_formID);
 	}
 
 	inline void DetectDistrictLanguage()
 	{
-		const auto address = GetFormByNumericIDAddr();
-		if (!address) {
-			logger::info("District names: form lookup not verified for this runtime; using location names only");
-			return;
-		}
-		const REL::Relocation<RE::TESForm*(std::uint32_t)> getForm{ REL::Offset(address) };
-		districtLanguage = Districts::DetectLanguage([&](std::uint32_t a_formID) -> const char* {
-			const auto* form = getForm(a_formID);
+		districtLanguage = Districts::DetectLanguage([](std::uint32_t a_formID) -> const char* {
+			const auto* form = GetFormByNumericID(a_formID);
 			if (!form || !form->Is(RE::ENUM_FORM_ID::kLCTN)) return nullptr;
 			return static_cast<const RE::BGSLocation*>(form)->fullName.c_str();
 		});
