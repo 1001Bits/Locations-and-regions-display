@@ -24,6 +24,10 @@ set(SOURCE_FILES
     "${SOURCE_DIR}/PCH.cpp"
     "${SOURCE_DIR}/PCH.h"
     "${SOURCE_DIR}/RE.h"
+    "${SOURCE_DIR}/Areas.h"
+    "${SOURCE_DIR}/DistrictData.h"
+    "${SOURCE_DIR}/Districts.h"
+    "${SOURCE_DIR}/Notifications.h"
     "${SOURCE_DIR}/Settings.h"
 )
 
@@ -111,19 +115,36 @@ handle_data_files(
 )
 
 # ── MO2 auto-deploy ─────────────────────────────────────────────────────────
-foreach(DEPLOY_TARGET $ENV{FalloutPluginTargets})
-    message("Adding deployment target ${DEPLOY_TARGET}.")
-    add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:${PROJECT_NAME}> "${DEPLOY_TARGET}/F4SE/Plugins/")
-endforeach()
-
+# Per-project deploy targets. Hardcoded so this DLL doesn't leak into other
+# projects' mod folders via the shared $FalloutPluginTargets env var (which
+# every CommonLibF4 project shared and which dumped them all into Buffout's
+# mod folder — MO2 VFS conflict resolution then picked the wrong copy).
+set(__DEPLOY_TARGETS
+    "C:/Games/MO2/mods/${PROJECT_NAME}"
+    "C:/Games/Fallout.4 1.10.163/Data"
+)
+if(COPY_OUTPUT)
+    foreach(DEPLOY_TARGET ${__DEPLOY_TARGETS})
+        if(EXISTS "${DEPLOY_TARGET}")
+            message("Adding deployment target ${DEPLOY_TARGET}.")
+            add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E make_directory "${DEPLOY_TARGET}/F4SE/Plugins/"
+                COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:${PROJECT_NAME}> "${DEPLOY_TARGET}/F4SE/Plugins/")
+        else()
+            message("Skipping deployment target ${DEPLOY_TARGET} (does not exist).")
+        endif()
+    endforeach()
+endif()
 # ── Zip packaging ────────────────────────────────────────────────────────────
 set(ZIP_DIR "${CMAKE_CURRENT_BINARY_DIR}/zip")
 add_custom_target(build-time-make-directory ALL
     COMMAND ${CMAKE_COMMAND} -E make_directory "${ZIP_DIR}" "${ZIP_DIR}/F4SE/Plugins/")
 file(MAKE_DIRECTORY "${ZIP_DIR}/F4SE/Plugins/")
+# Ship the settings toml alongside the DLL — without it users have no file to
+# edit, and Settings::Load silently falls back to the built-in defaults.
 add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:${PROJECT_NAME}> "${ZIP_DIR}/F4SE/Plugins/")
+    COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:${PROJECT_NAME}> "${ZIP_DIR}/F4SE/Plugins/"
+    COMMAND ${CMAKE_COMMAND} -E copy "${ROOT_DIR}/data/Data/F4SE/Plugins/${PROJECT_NAME}.toml" "${ZIP_DIR}/F4SE/Plugins/")
 
 set(TARGET_ZIP "${PROJECT_NAME}-${PROJECT_VERSION}.7z")
 ADD_CUSTOM_COMMAND(TARGET ${PROJECT_NAME} POST_BUILD

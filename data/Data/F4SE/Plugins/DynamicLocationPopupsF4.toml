@@ -1,11 +1,14 @@
 [Settings]
 
-# Triggers a location popup when:
-#   0 - Entering any new location (different from the current one).
-#       Walking back and forth between two known locations pops every cross.
-#   1 - Entering a location different from BOTH the current and the last visited
-#       (suppresses ping-pong spam at boundary lines).
-# The very first time the player enters a location after the game launches is
-# always silent — the engine handles genuine first-discovery (chime + vignette)
-# on its own, and we don't want to pop on save-load either.
-iMode = 0
+# Keep the popup on screen instead of clearing it after ~3 seconds.
+#   false - (default) the title is cleared ~3 seconds after it appears.
+#   true  - the title stays up until the game itself shows another
+#           notification in the same slot (quest update, etc).
+# Native notifications take priority in either mode.
+bStayOnScreen = false
+
+# How long the popup stays on screen, in milliseconds, before it is cleared.
+# Default 3000 (3 seconds). Values outside [250, 60000] are clamped.
+# Ignored when bStayOnScreen = true.
+# This controls only our location title, not the game's quest/XP banner timing.
+iDisplayTimeMS = 3000

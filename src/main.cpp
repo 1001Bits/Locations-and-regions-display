@@ -9,10 +9,10 @@ using namespace REL;
 
 constexpr size_t TRAMPOLINE_SIZE = 1u << 11;
 
-// 1.11.191 isn't predefined in CommonLibF4 (RUNTIME_LATEST stops at 1.10.984)
-// so we hand-roll the constant. Anything from 1.10.984 through 1.11.191 is
+// 1.11.240 isn't predefined in CommonLibF4 (RUNTIME_LATEST stops at 1.10.984)
+// so we hand-roll the constant. Anything from 1.10.984 through 1.11.240 is
 // considered an "NG" runtime by Module::IsNG().
-constexpr REL::Version RUNTIME_1_11_191{ 1, 11, 191, 0 };
+constexpr REL::Version RUNTIME_1_11_240{ 1, 11, 240, 0 };
 
 const auto RUNTIME_VERSION_MIN = Relocate(
 	F4SE::RUNTIME_1_10_163,
@@ -20,9 +20,9 @@ const auto RUNTIME_VERSION_MIN = Relocate(
 	F4SE::RUNTIME_VR_1_2_72);
 const auto RUNTIME_VERSION_MAX = Relocate(
 	F4SE::RUNTIME_1_10_163,
-	RUNTIME_1_11_191,
+	RUNTIME_1_11_240,
 	F4SE::RUNTIME_VR_1_2_72);
-constexpr auto RUNTIME_VERSION_NG_COMPAT = RUNTIME_1_11_191;
+constexpr auto RUNTIME_VERSION_NG_COMPAT = RUNTIME_1_11_240;
 
 namespace
 {
@@ -51,19 +51,30 @@ namespace
 		spdlog::set_pattern("[%Y-%m-%d %T.%e][%-16s:%-4#][%L]: %v");
 	}
 
-	void F4SEAPI MessageHandler(F4SE::MessagingInterface::Message* /*a_message*/)
+	void F4SEAPI MessageHandler(F4SE::MessagingInterface::Message* a_message)
 	{
-		// All runtimes drive popups off the FlashLocationText::ShowLocationText
-		// hook installed in F4SEPlugin_Load — nothing to do here.
+		// F4SE and F4SE VR send this twice with the flag as the pointer value itself:
+		// null before form data loads, non-null once it has finished loading.
+		if (a_message && a_message->type == F4SE::MessagingInterface::kGameDataReady && a_message->data) {
+			RE::SendHUDMessage::DetectDistrictLanguage();
+		}
+		if (a_message && (a_message->type == F4SE::MessagingInterface::kPreLoadGame ||
+			a_message->type == F4SE::MessagingInterface::kPostLoadGame ||
+			a_message->type == F4SE::MessagingInterface::kNewGame)) {
+			RE::SendHUDMessage::InvalidateHUD();
+		}
 	}
 
 	// Hook on FlashLocationText::ShowLocationText. Member fn: (this, name).
 	// Same role across all three runtimes — leaf renderer that the engine
 	// only invokes after the proximity / per-location throttle has approved
 	// the display. We don't call the original, so the small native subtitle
-	// never renders; our SetValue call broadcasts to the big-title widget.
+	// never renders; a private display event goes to the big-title widget.
 	//   F4 OG  (1.10.163)  = 0x140b34a40              (manual offset)
+	//   F4 NG  (1.10.984)  = 0x140a20620  ID 2223245
 	//   F4 NG  (1.11.191)  = 0x140a741f0  ID 2223245
+	//   F4 NG  (1.11.221)  = 0x140a74230  ID 2223245
+	//   F4 NG  (1.11.240)  = 0x140a74540  ID 2223245
 	//   F4 VR  (1.2.72)    = 0x140b563e0              (manual offset)
 	void ShowLocationTextHook(void* /*a_this*/, const char* a_name)
 	{

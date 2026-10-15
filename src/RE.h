@@ -1,153 +1,255 @@
 #pragma once
 
 #include "Areas.h"
+#include "Districts.h"
+#include "Notifications.h"
+#include "Settings.h"
 
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
+#include <cstddef>
+#include <cstdint>
+#include <mutex>
 #include <thread>
 
-namespace RE
+namespace RE::SendHUDMessage
 {
-	namespace SendHUDMessage
+	struct NotificationText
 	{
-		// HUDNotificationDisplayEvent — payload broadcast to the HUDMenu Flash UI.
-		// Layout reverse-engineered from HUDNotificationsModel::UpdateLocationVignette
-		// (F4 OG @ 0x140a66380) plus empirical testing: the Flash widget renders
-		// field +8 as the big top title and field +0 as the smaller subtitle below.
-		// (The engine's first-discovery path puts the location name in +0 and the
-		// "HDT_LOCATION_DISCOVERED" interned BSFixedString in +8 — Flash special-
-		// cases that marker to swap to the centred first-discovery layout. We
-		// don't try to hit that special case anymore: we just write directly to
-		// the slots Flash renders by default.)
-		struct HUDNotificationDisplayEvent
-		{
-			RE::BSFixedStringCS subtitle;  // 00 — small subtitle slot (under)
-			RE::BSFixedStringCS title;     // 08 — big top title slot
-		};
-		static_assert(sizeof(HUDNotificationDisplayEvent) == 0x10);
+		RE::BSFixedStringCS subtitle;
+		RE::BSFixedStringCS title;
+	};
+	static_assert(sizeof(NotificationText) == 0x10);
 
-		// Map a location name to its wiki-style "area" subtitle. The wiki's
-		// areas (Back Bay, Diamond City, The Glowing Sea, Far Harbor, etc.)
-		// don't line up with the in-game BGSLocation parent chain — e.g. Rocky
-		// Cave's parentLoc is Commonwealth directly, with no Glowing Sea node
-		// in between. So we use a hardcoded location → area lookup sourced
-		// from the wiki (see Areas.h). Unknown locations (mods, "Other"
-		// category, or top-level area names) get no subtitle.
-		[[nodiscard]] inline const char* FindAreaNameForLocation(const char* a_locationName)
-		{
-			return Areas::GetAreaForLocation(a_locationName);
+	// Layout used by BSTValueEventSource<HUDNotificationDisplayEvent>. The
+	// broadcast helper only reads this optional and locks dataLock; it makes
+	// no virtual calls. We construct a PRIVATE source for each display/clear.
+	// The native source is inspected under its lock, never assigned or reset.
+	struct NotificationSource
+	{
+		using value_type = NotificationText;
+		std::uintptr_t vtable{};
+		RE::BSTOptional<NotificationText> optionalValue;
+		RE::BSSpinLock dataLock;
+	};
+	static_assert(offsetof(NotificationSource, optionalValue) == 0x08);
+	static_assert(sizeof(RE::BSTOptional<NotificationText>) == 0x18);
+	static_assert(offsetof(NotificationSource, dataLock) == 0x20);
+	static_assert(sizeof(NotificationSource) == 0x28);
+
+	inline std::atomic<std::uint64_t> hudEpoch{ 0 };
+	inline Notifications::PopupState popupState;  // UI thread only
+
+	inline void InvalidateHUD()
+	{
+		// Also protects against an allocator reusing the old HUDDataModel address.
+		++hudEpoch;
+	}
+
+	[[nodiscard]] inline RE::PlayerCharacter* GetPlayerForLocation()
+	{
+		static const REL::Relocation<RE::PlayerCharacter**> player{ REL::RelocationID(303410, 2698073) };
+		return *player;
+	}
+
+	// Official language of the loaded strings; districts are only shown when it is known.
+	inline std::atomic<int> districtLanguage{ Districts::kUnknownLanguage };
+
+	// TESForm::GetFormByNumericID(formID), which takes the form map's read lock itself.
+	// Exact builds only, verified in each executable. CommonLibF4's GetFormByID uses NG IDs
+	// 2689178/2689189, which the 1.11.x address libraries lack; the lookup then silently
+	// resolves to an unrelated entry and the game crashes.
+	[[nodiscard]] inline std::uintptr_t GetFormByNumericIDAddr()
+	{
+		if (REL::Module::IsF4()) return 0x152c90;
+		if (REL::Module::IsVR()) return 0x1598c0;
+		const auto ver = REL::Module::get().version();
+		if (ver == REL::Version{ 1, 10, 984, 0 }) return 0x2bd440;
+		if (ver == REL::Version{ 1, 11, 191, 0 }) return 0x311850;
+		if (ver == REL::Version{ 1, 11, 221, 0 }) return 0x311860;
+		if (ver == REL::Version{ 1, 11, 240, 0 }) return 0x311b80;
+		return 0;
+	}
+
+	inline void DetectDistrictLanguage()
+	{
+		const auto address = GetFormByNumericIDAddr();
+		if (!address) {
+			logger::info("District names: form lookup not verified for this runtime; using location names only");
+			return;
 		}
-
-		// Big left-side first-discovery title widget. Bypasses HUDNotificationsModel's
-		// queue + UpdateLocationVignette entirely: we go straight to the Flash UI by
-		// setting the value on the model's HUDNotificationDisplayEvent source and
-		// broadcasting. The chime ("UIDiscoverLocation") and XP-rollup vignette live
-		// inside UpdateLocationVignette, so neither fires.
-		//
-		// Because we bypass the model's queue, the engine never ticks its fade timer
-		// (UpdateDisplayTimers → ClearValueIfHasValue) for our popups, so the title
-		// would otherwise stay on screen forever. We schedule a delayed clear
-		// ourselves; an atomic generation counter ensures rapid re-entries don't let
-		// an older timer wipe out a newer popup.
-		//
-		// Address-library layout — offsets from image base, all confirmed via
-		// Ghidra. The HUDDataModel singleton pointer differs between NG patches
-		// because 1.11.191 dropped its address-library ID; see GetHUDDataAddr.
-		//
-		//                                            F4 OG     F4 NG 984    F4 NG 1.11.191    F4 VR
-		//   HUDDataModel singleton pointer (data)   0x5a60a30  0x2ff2078    0x32694e8         0x5ac1850
-		//   HUDNotificationsModel offset within HDM 0x0c40     0x0c40       0x0c40            0x13a8
-		//   BSTValueEventSource offset within HNM   0x0120     0x0120       0x0120            0x0120
-		//   ::SetValue                              0xa74e90   0x9a09e0     0x9f41b0          0xa78970
-		//                                                      (NG ID 2221317 covers both NG patches)
-		//   ::ClearValueIfHasValue                  0xa70630   inlined      inlined           0xa74110
-		//
-		// NG inlined the spinlock+notify into every caller of the event source,
-		// so there's no standalone ClearValueIfHasValue for us to call on either
-		// NG patch. We work around it by reusing SetValue with empty
-		// BSFixedStringCS values — Flash renders the cleared text and the widget
-		// effectively hides.
-		using setvalue_t = std::uint64_t(std::uintptr_t, HUDNotificationDisplayEvent*);
-		using clearvalue_t = std::uint64_t(std::uintptr_t);
-
-		// HUDDataModel singleton pointer per runtime. NG splits between the
-		// 1.10.984 and 1.11.191 patches — the singleton's address-library ID
-		// (2694613) was dropped on 1.11.191 so we version-detect the offset
-		// rather than relying on REL::ID for it.
-		[[nodiscard]] inline std::uintptr_t GetHUDDataAddr()
-		{
-			if (REL::Module::IsF4()) return 0x5a60a30;  // 1.10.163
-			if (REL::Module::IsVR()) return 0x5ac1850;  // 1.2.72
-			constexpr REL::Version kVer_1_11_191{ 1, 11, 191, 0 };
-			return (REL::Module::get().version() < kVer_1_11_191)
-				? 0x2FF2078u   // NG 1.10.984
-				: 0x32694E8u;  // NG 1.11.191 (recovered via direct binary analysis)
+		const REL::Relocation<RE::TESForm*(std::uint32_t)> getForm{ REL::Offset(address) };
+		districtLanguage = Districts::DetectLanguage([&](std::uint32_t a_formID) -> const char* {
+			const auto* form = getForm(a_formID);
+			if (!form || !form->Is(RE::ENUM_FORM_ID::kLCTN)) return nullptr;
+			return static_cast<const RE::BGSLocation*>(form)->fullName.c_str();
+		});
+		const int language = districtLanguage;
+		if (language != Districts::kUnknownLanguage) {
+			logger::info("District names: {}", Districts::data::kLanguages[static_cast<std::size_t>(language)]);
+		} else {
+			logger::info("District names: game strings are not an official translation; using location names only");
 		}
+	}
 
-		// HUDNotificationsModel offset within HUDDataModel.
-		[[nodiscard]] inline std::uintptr_t GetHNMOffset()
-		{
-			return REL::Module::IsVR() ? 0x13a8u : 0xc40u;
-		}
-
-		// SetValue and ClearValueIfHasValue addresses. NG patches share the
-		// SetValue address-library ID (2221317), but ClearValueIfHasValue was
-		// inlined into every caller on NG so we fall back to SetValue with an
-		// empty event when clearing on either NG patch.
-		[[nodiscard]] inline REL::Relocation<setvalue_t> GetSetValue()
-		{
-			if (REL::Module::IsNG()) return REL::Relocation<setvalue_t>{ REL::ID(2221317) };
-			const auto off = REL::Module::IsVR() ? 0xa78970u : 0xa74e90u;
-			return REL::Relocation<setvalue_t>{ REL::Offset(off) };
-		}
-
-		inline void ShowDiscoveryNotification(const char* a_name)
-		{
-			if (!a_name || *a_name == '\0') {
-				return;
+	[[nodiscard]] inline const char* FindAreaNameForLocation(const char* a_locationName)
+	{
+		const auto* player = GetPlayerForLocation();
+		if (!player) return nullptr;
+		const auto* cell = player->GetParentCell();
+		// This field is a union; an interior's value is not a worldspace pointer.
+		const auto* world = cell && cell->IsExterior() ? cell->worldSpace : nullptr;
+		if (world && world->formID == Districts::data::kCommonwealth) {
+			const auto position = player->GetPosition();
+			if (const auto* district = Districts::Find(districtLanguage, a_locationName, position.x, position.y)) {
+				return district;
 			}
+		}
+		return Areas::GetAreaForLocation(a_locationName, player->GetCurrentLocation(), world);
+	}
 
-			constexpr std::uintptr_t evSourceOffset = 0x120;
-			const REL::Relocation<std::uintptr_t*> hudDataSlot{ REL::Offset(GetHUDDataAddr()) };
-			const auto hudData = *hudDataSlot.get();
-			if (hudData == 0) {
-				return;
-			}
-			const auto eventSource = hudData + GetHNMOffset() + evSourceOffset;
+	[[nodiscard]] inline std::uintptr_t GetHUDDataAddr()
+	{
+		if (REL::Module::IsF4()) return 0x5a60a30;
+		if (REL::Module::IsVR()) return 0x5ac1850;
+		constexpr REL::Version ver191{ 1, 11, 191, 0 };
+		constexpr REL::Version ver221{ 1, 11, 221, 0 };
+		constexpr REL::Version ver240{ 1, 11, 240, 0 };
+		const auto ver = REL::Module::get().version();
+		if (ver < ver191) return 0x2ff2078;
+		if (ver < ver221) return 0x32694e8;
+		if (ver < ver240) return 0x3269568;
+		return 0x32745f8;
+	}
 
-			HUDNotificationDisplayEvent ev{};
-			ev.title = a_name;
-			if (const char* areaName = FindAreaNameForLocation(a_name)) {
-				ev.subtitle = areaName;
-			} else if (!Areas::IsTopLevelArea(a_name)) {
-				// Default region for any unmapped Commonwealth-side location.
-				// Top-level worldspace headings (Far Harbor, Nuka-World, …)
-				// stay subtitle-less so we don't render "Far Harbor\nCommonwealth".
-				ev.subtitle = "Commonwealth";
-			}
+	[[nodiscard]] inline Notifications::Context GetContext()
+	{
+		const REL::Relocation<std::uintptr_t*> slot{ REL::Offset(GetHUDDataAddr()) };
+		return { *slot.get(), hudEpoch.load() };
+	}
 
-			const auto setValue = GetSetValue();
-			setValue(eventSource, &ev);
+	[[nodiscard]] inline NotificationSource& NativeSource(std::uintptr_t a_hudData)
+	{
+		const auto modelOffset = REL::Module::IsVR() ? 0x13a8u : 0xc40u;
+		return *reinterpret_cast<NotificationSource*>(a_hudData + modelOffset + 0x120);
+	}
 
-			static std::atomic<std::uint64_t> generation{ 0 };
-			const auto myGeneration = ++generation;
-			std::thread([eventSource, myGeneration]() {
-				std::this_thread::sleep_for(std::chrono::milliseconds(3000));
-				if (generation.load() != myGeneration) {
-					return;
+	// The notification queue precedes the display sources in the model. Lock in
+	// the engine's order (queue, then source). Pending vignettes also get priority,
+	// including banners using the other native display source at model + 0xd8.
+	[[nodiscard]] inline RE::BSSpinLock& NativeQueueLock(NotificationSource& a_source)
+	{
+		return *reinterpret_cast<RE::BSSpinLock*>(reinterpret_cast<std::uintptr_t>(&a_source) - 0x70);
+	}
+
+	[[nodiscard]] inline bool NativeQueued(const NotificationSource& a_source)
+	{
+		return *reinterpret_cast<const std::uint32_t*>(reinterpret_cast<std::uintptr_t>(&a_source) - 0x78) != 0;
+	}
+
+	inline void Broadcast(NotificationSource& a_privateSource)
+	{
+		// The Notify helper used by the engine's SetValue and real optional clear.
+		// Verified from OG/VR and 1.11.240 disassembly. NG ID 2221259 is Notify;
+		// ID 2221317 (used in 1.2.2) is SetValue and occupies the native queue.
+		using notify_t = void(NotificationSource*);
+		const REL::Relocation<notify_t> notify = REL::Module::IsNG() ?
+			REL::Relocation<notify_t>{ REL::ID(2221259) } :
+			REL::Relocation<notify_t>{ REL::Offset(REL::Module::IsVR() ? 0xa733a0 : 0xa6f8c0) };
+		notify(&a_privateSource);
+	}
+
+	inline void ClearPopup(Notifications::Ticket a_ticket)
+	{
+		const auto context = GetContext();
+		if (!popupState.Expire(a_ticket, context) || !context.hudData) return;
+		auto& native = NativeSource(context.hudData);
+		const RE::BSAutoLock queueLock{ NativeQueueLock(native) };
+		const RE::BSAutoLock lock{ native.dataLock };
+		// A native quest/level/discovery banner always has priority. Its source
+		// remains untouched even if our fade task was already queued beforehand.
+		Notifications::PublishIfIdle(native, nullptr, Broadcast, NativeQueued(native));
+	}
+
+	class FadeTimer
+	{
+	public:
+		[[nodiscard]] static FadeTimer& GetSingleton()
+		{
+			// Process-lifetime worker: do not destroy its mutex while it is asleep
+			// during DLL/process teardown. It never accesses HUD data itself.
+			static auto* singleton = new FadeTimer;
+			return *singleton;
+		}
+
+		void Schedule(Notifications::Ticket a_ticket, std::uint32_t a_delayMS)
+		{
+			{
+				std::lock_guard lock{ _mutex };
+				++_generation;
+				_ticket = a_ticket;
+				_deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(a_delayMS);
+				_armed = true;
+				if (!_workerStarted) {
+					_workerStarted = true;
+					std::thread(&FadeTimer::Run, this).detach();
 				}
-				if (REL::Module::IsNG()) {
-					// NG inlined the standalone clear; overwrite with an empty event.
-					HUDNotificationDisplayEvent emptyEv{};
-					const auto setValue = GetSetValue();
-					setValue(eventSource, &emptyEv);
-				} else {
-					const auto clearAddr = REL::Module::IsVR() ? 0xa74110u : 0xa70630u;
-					const REL::Relocation<clearvalue_t> clearValueIfHasValue{ REL::Offset(clearAddr) };
-					clearValueIfHasValue(eventSource);
-				}
-			}).detach();
+			}
+			_cv.notify_one();
 		}
 
+	private:
+		void Run()
+		{
+			std::unique_lock lock{ _mutex };
+			for (;;) {
+				_cv.wait(lock, [this] { return _armed; });
+				const auto generation = _generation;
+				if (_cv.wait_until(lock, _deadline, [this, generation] { return _generation != generation; })) continue;
+				if (!_armed || _generation != generation) continue;
+				_armed = false;
+				const auto ticket = _ticket;
+				lock.unlock();
+				if (const auto task = F4SE::GetTaskInterface()) {
+					task->AddUITask([ticket] { ClearPopup(ticket); });
+				}
+				lock.lock();
+			}
+		}
+
+		std::mutex _mutex;
+		std::condition_variable _cv;
+		std::chrono::steady_clock::time_point _deadline{};
+		Notifications::Ticket _ticket{};
+		std::uint64_t _generation{};
+		bool _armed{};
+		bool _workerStarted{};
+	};
+
+	inline void ShowDiscoveryNotification(const char* a_name)
+	{
+		if (!a_name || !*a_name) return;
+		const auto task = F4SE::GetTaskInterface();
+		if (!task) return;
+		const auto epoch = hudEpoch.load();
+		NotificationText text{};
+		text.title = a_name;
+		if (const auto* area = FindAreaNameForLocation(a_name)) text.subtitle = area;
+
+		// Own both interned strings across the UI handoff; no raw title pointer or
+		// engine form pointer survives the hook. Display and fade use one thread.
+		task->AddUITask([text, epoch] {
+			const auto context = GetContext();
+			if (!context.hudData || context.epoch != epoch) return;
+			auto& native = NativeSource(context.hudData);
+			const RE::BSAutoLock queueLock{ NativeQueueLock(native) };
+			const RE::BSAutoLock lock{ native.dataLock };
+			if (!Notifications::PublishIfIdle(native, &text, Broadcast, NativeQueued(native))) return;
+			const auto ticket = popupState.Start(context);
+			if (!Settings::bStayOnScreen) {
+				FadeTimer::GetSingleton().Schedule(ticket, Settings::iDisplayTimeMS);
+			}
+		});
 	}
 }

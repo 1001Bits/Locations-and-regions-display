@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.23)
 set(NAME "DynamicLocationPopupsF4")
-set(VERSION 1.0.1)
+set(VERSION 1.2.3)
 
 # ── Project setup (based on Daytripper4 multi-runtime pattern) ──────────────
 project(
@@ -18,6 +18,12 @@ include(cmake/common.cmake)
 
 add_subdirectory(src)
 include(cmake/packaging.cmake)
+
+option(DLP_BUILD_TESTS "Build location subtitle and notification regression tests" OFF)
+if(DLP_BUILD_TESTS)
+    enable_testing()
+    add_subdirectory(tests)
+endif()
 
 # Disable C++ modules in MSVC IDE (avoids STL modules build issues)
 if(MSVC_VERSION GREATER_EQUAL 1936 AND MSVC_IDE)
